@@ -1,17 +1,35 @@
 import './style.css';
-import { events, validateTimeline } from './logic.js';
+import {
+  events,
+  validateTimeline,
+  worksheetSections,
+  worksheetStructureLine,
+  worksheetAnswers,
+  checkWorksheetAnswers,
+} from './logic.js';
 
 const app = document.querySelector('#app');
 
 const appState = {
-  step: 'timeline',
+  step: 'worksheet',
+  worksheetValues: Array(worksheetAnswers.length).fill(''),
+  worksheetStatus: Array(worksheetAnswers.length).fill(null),
   timelineValues: Array(12).fill(''),
-  graphValues: Array(events.length).fill(0),
-  graphPoints: [],
+  graphValues: Array(events.length).fill(null),
+  graphCompleted: false,
+  showEventPeek: false,
   selectedEventIndex: 0,
   eventOrder: events.map((event) => event.id),
   animatingSlotIndex: null,
 };
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
 
 function getDuplicateValues(values) {
   const filledValues = values.filter((value) => value !== '' && value !== null && value !== undefined);
@@ -58,39 +76,144 @@ function setSlotValue(slotIndex, value) {
 }
 
 function render() {
+  const stepView = {
+    worksheet: createWorksheetView,
+    timeline: createTimelineView,
+    graph: createGraphView,
+  }[appState.step]();
+
   app.innerHTML = `
     <main class="app-shell">
       <header class="hero-block">
         <p class="eyebrow">소설 <span>꺼삐딴 리</span></p>
         <h1>이인국의 심리 그래프</h1>
         <p class="intro">
-          12개의 사건을 시간 순서대로 배치한 뒤, 이인국의 심리를 0을 기준으로 위/아래로 나누어 그래프로 표현해보세요.
+          소설의 배경과 구성을 정리하고, 12개의 사건을 시간 순서대로 배치한 뒤, 이인국의 심리를 0을 기준으로 위/아래로 나누어 그래프로 표현해보세요.
         </p>
       </header>
 
       <section class="panel">
         <div class="step-nav">
-          <button class="step-pill ${appState.step === 'timeline' ? 'active' : ''}" type="button">1. 사건 순서 맞추기</button>
-          <button class="step-pill ${appState.step === 'graph' ? 'active' : ''}" type="button">2. 심리 그래프 만들기</button>
+          <button class="step-pill ${appState.step === 'worksheet' ? 'active' : ''}" type="button">1. 소설의 배경과 구성 방식</button>
+          <button class="step-pill ${appState.step === 'timeline' ? 'active' : ''}" type="button">2. 사건이 발생한 순서대로 배열하기</button>
+          <button class="step-pill ${appState.step === 'graph' ? 'active' : ''}" type="button">3. 심리 그래프 만들기</button>
         </div>
 
-        ${appState.step === 'timeline' ? createTimelineView() : createGraphView()}
+        ${stepView}
       </section>
     </main>
   `;
 
-  if (appState.step === 'timeline') {
+  if (appState.step === 'worksheet') {
+    attachWorksheetEvents();
+  } else if (appState.step === 'timeline') {
     attachTimelineEvents();
   } else {
     attachGraphEvents();
   }
 }
 
+function renderBlankLine(line) {
+  return line.replace(/\{\{(\d+)\}\}/g, (_, indexStr) => {
+    const index = Number(indexStr);
+    const value = appState.worksheetValues[index] || '';
+    const status = appState.worksheetStatus[index];
+    const statusClass = status ? ` ${status}` : '';
+    return `<input type="text" class="blank-input${statusClass}" data-blank-index="${index}" value="${escapeHtml(value)}" aria-label="빈칸 ${index + 1}" autocomplete="off" />`;
+  });
+}
+
+function getWorksheetStatusText() {
+  const filledCount = appState.worksheetValues.filter((value) => value.trim() !== '').length;
+  const correctCount = appState.worksheetStatus.filter((status) => status === 'correct').length;
+  const hasBeenChecked = appState.worksheetStatus.some((status) => status !== null);
+
+  return hasBeenChecked
+    ? `${worksheetAnswers.length}문항 중 ${correctCount}개 정답입니다.`
+    : `${worksheetAnswers.length}문항 중 ${filledCount}개 작성함`;
+}
+
+function createWorksheetView() {
+  return `
+    <div class="worksheet-section">
+      <h2>1단계 · 소설의 배경과 구성 방식</h2>
+      <p class="subtext">구성 단계, 시기, 공간을 참고해 소설의 주요 내용 빈칸에 알맞은 단어를 채워보세요.</p>
+
+      <div class="worksheet-table">
+        ${worksheetSections.map((section) => `
+          <div class="worksheet-stage-group">
+            <div class="worksheet-stage-badge">${section.stage}</div>
+            <div class="worksheet-rows">
+              ${section.rows.map((row) => `
+                <div class="worksheet-row">
+                  <div class="worksheet-meta">
+                    <span class="worksheet-time">${row.time}</span>
+                    <span class="worksheet-space">${row.space}</span>
+                  </div>
+                  <ul class="worksheet-content">
+                    ${row.lines.map((line) => `<li>${renderBlankLine(line)}</li>`).join('')}
+                  </ul>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+
+      <div class="worksheet-structure">${renderBlankLine(worksheetStructureLine)}</div>
+
+      <p class="worksheet-status">${getWorksheetStatusText()}</p>
+
+      <div class="actions">
+        <button id="worksheet-submit" type="button">완료</button>
+      </div>
+      <p id="worksheet-feedback" class="feedback" aria-live="polite"></p>
+    </div>
+  `;
+}
+
+function attachWorksheetEvents() {
+  document.querySelectorAll('.blank-input').forEach((input) => {
+    input.addEventListener('input', (event) => {
+      const index = Number(event.target.dataset.blankIndex);
+      appState.worksheetValues[index] = event.target.value;
+      appState.worksheetStatus[index] = null;
+      event.target.classList.remove('correct', 'incorrect');
+
+      const statusText = document.querySelector('.worksheet-status');
+      if (statusText) {
+        statusText.textContent = getWorksheetStatusText();
+      }
+    });
+  });
+
+  document.querySelector('#worksheet-submit').addEventListener('click', () => {
+    const results = checkWorksheetAnswers(appState.worksheetValues);
+    appState.worksheetStatus = results.map((isCorrect) => (isCorrect ? 'correct' : 'incorrect'));
+    const allCorrect = results.every(Boolean);
+
+    if (allCorrect) {
+      appState.step = 'timeline';
+      render();
+      return;
+    }
+
+    render();
+
+    const feedback = document.querySelector('#worksheet-feedback');
+    const correctCount = results.filter(Boolean).length;
+    feedback.textContent = `${correctCount} / ${results.length}개 정답이에요. 빨간 테두리로 표시된 빈칸을 다시 확인해보세요.`;
+    feedback.classList.add('warning');
+    feedback.classList.remove('success');
+  });
+}
+
 function createTimelineView() {
   return `
     <div class="timeline-section">
-      <h2>1단계 · 사건 배열하기</h2>
+      <h2>2단계 · 사건이 발생한 순서대로 배열하기</h2>
       <p class="subtext">먼저 12개의 사건을 읽어보고, 카드를 드래그해서 아래 12개의 네모칸에 놓아보세요.</p>
+      <p class="subtext">사건을 마우스로 끌어다 빈칸에 놓으면 사건 번호가 입력되고, 더블클릭하면 뺄 수 있습니다.</p>
 
       <div class="event-list" id="event-drop-zone">
         <h3>제시된 사건</h3>
@@ -125,9 +248,9 @@ function createTimelineView() {
           const assignedEvent = events.find((event) => event.id === Number(assignedValue));
           return `
             <div class="timeline-slot ${assignedValue ? 'filled' : ''} ${appState.animatingSlotIndex === index ? 'drop-animating' : ''}" data-slot-index="${index}">
+              ${assignedValue ? '<div class="slot-check-row"><span class="slot-check" aria-hidden="true">✓</span></div>' : ''}
               <div class="slot-chip">${assignedValue ? `사건 ${assignedValue}` : '빈 칸'}</div>
               ${assignedEvent ? `<div class="slot-event-text">${assignedEvent.text}</div>` : ''}
-              ${assignedValue ? '<span class="slot-check" aria-hidden="true">✓</span>' : ''}
               <input
                 type="number"
                 min="1"
@@ -149,65 +272,208 @@ function createTimelineView() {
   `;
 }
 
+function getOrderedEvents() {
+  const orderedIds = appState.timelineValues.map((value) => Number(value));
+  const orderedEvents = orderedIds.map((id) => events.find((event) => event.id === id)).filter(Boolean);
+  return orderedEvents.length === events.length ? orderedEvents : events;
+}
+
+function getPlotMetrics() {
+  const orderedEvents = getOrderedEvents();
+  const margin = { top: 20, right: 24, bottom: 54, left: 44 };
+  const plotWidth = 700;
+  const plotHeight = 300;
+  const stepX = plotWidth / (orderedEvents.length - 1);
+  const maxValue = 5;
+
+  return {
+    orderedEvents,
+    margin,
+    plotWidth,
+    plotHeight,
+    stepX,
+    maxValue,
+    viewBoxWidth: margin.left + plotWidth + margin.right,
+    viewBoxHeight: margin.top + plotHeight + margin.bottom,
+    indexToX: (index) => margin.left + index * stepX,
+    valueToY: (value) => margin.top + plotHeight / 2 - (value / maxValue) * (plotHeight / 2),
+  };
+}
+
+function formatGraphValue(value) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
 function createGraphView() {
-  const graphHeight = 280;
-  const graphWidth = 760;
-  const stepX = graphWidth / (events.length - 1);
-  const maxValue = 4;
-  const minValue = -4;
-  const points = appState.graphPoints.length ? appState.graphPoints : buildGraphPoints();
+  const metrics = getPlotMetrics();
+  const { orderedEvents, margin, plotWidth, plotHeight, viewBoxWidth, viewBoxHeight, maxValue, indexToX, valueToY } = metrics;
+  const filledCount = appState.graphValues.filter((value) => value !== null && value !== undefined).length;
+  const allFilled = filledCount === orderedEvents.length;
+  const points = appState.graphCompleted ? buildGraphPoints(metrics) : [];
 
   return `
     <div class="graph-section">
-      <h2>2단계 · 이인국의 심리 그래프</h2>
-      <p class="subtext">각 사건에 대해 이인국의 심리가 긍정인지 부정인지 0을 기준으로 선택해 주세요. 마우스나 터치로 그래프 위를 클릭하면 점이 찍힙니다.</p>
+      <h2>3단계 · 이인국의 심리 그래프</h2>
+      <p class="subtext">좌표평면 위에서 각 사건이 위치한 지점(사건 × 심리 값)을 클릭해 표시해 보세요. 심리 값은 -5(매우 부정)부터 +5(매우 긍정)까지 0.5 단위로 표시할 수 있습니다.</p>
+      <p class="subtext">이미 표시한 사건은 다시 클릭하거나 더블클릭하면 값을 수정할 수 있습니다. 12개 사건을 모두 표시한 뒤 완료 버튼을 누르면 점들이 이어진 꺾은선 그래프가 완성됩니다.</p>
 
-      <div class="graph-legend">
-        <span>부정</span>
-        <span>0</span>
-        <span>긍정</span>
+      <div class="graph-toolbar">
+        <button id="event-peek-toggle" type="button" class="peek-btn">${appState.showEventPeek ? '사건 내용 닫기' : '사건 내용 엿보기'}</button>
       </div>
 
-      <svg class="graph-svg" viewBox="0 0 ${graphWidth} ${graphHeight}" role="img" aria-label="이인국 심리 그래프">
-        <line x1="0" y1="${graphHeight / 2}" x2="${graphWidth}" y2="${graphHeight / 2}" class="axis" />
-        <line x1="0" y1="0" x2="0" y2="${graphHeight}" class="axis" />
-        ${Array.from({ length: 9 }, (_, index) => {
-          const y = (graphHeight / 8) * index;
-          return `<line x1="0" y1="${y}" x2="${graphWidth}" y2="${y}" class="grid" />`;
+      ${appState.showEventPeek ? createEventPeekPanel() : ''}
+
+      <svg class="graph-svg" viewBox="0 0 ${viewBoxWidth} ${viewBoxHeight}" role="img" aria-label="이인국 심리 좌표 그래프">
+        <defs>
+          <filter id="line-glow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="4" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+
+        ${Array.from({ length: maxValue * 2 + 1 }, (_, i) => {
+          const value = maxValue - i;
+          const y = valueToY(value);
+          return `
+            <line x1="${margin.left}" y1="${y}" x2="${margin.left + plotWidth}" y2="${y}" class="grid ${value === 0 ? 'zero-line' : ''}" />
+            <text x="${margin.left - 12}" y="${y}" class="axis-label y-label">${value}</text>
+          `;
         }).join('')}
-        ${events.map((event, index) => {
-          const x = index * stepX;
+
+        ${orderedEvents.map((event, index) => {
+          const x = indexToX(index);
+          return `
+            <line x1="${x}" y1="${margin.top}" x2="${x}" y2="${margin.top + plotHeight}" class="grid grid-vertical" />
+            <text x="${x}" y="${margin.top + plotHeight + 26}" class="axis-label x-label">사건${event.id}</text>
+          `;
+        }).join('')}
+
+        <line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + plotHeight}" class="axis" />
+
+        ${appState.graphCompleted ? `<polyline points="${points.map(([x, y]) => `${x},${y}`).join(' ')}" class="graph-line drawing" filter="url(#line-glow)" />` : ''}
+
+        ${orderedEvents.map((event, index) => {
           const value = appState.graphValues[index];
-          const y = ((value - minValue) / (maxValue - minValue)) * graphHeight;
-          const adjustedY = graphHeight - y;
-          return `<circle data-index="${index}" cx="${x}" cy="${adjustedY}" r="7" class="graph-point ${value === 0 ? 'neutral' : ''}" />`;
+          if (value === null || value === undefined) {
+            return '';
+          }
+          const x = indexToX(index);
+          const y = valueToY(value);
+          const delay = appState.graphCompleted ? `${1.3 + index * 0.06}s` : '0s';
+          const labelY = value >= maxValue - 0.5 ? y + 18 : y - 12;
+          const labelAnchor = index === 0 ? 'start' : index === orderedEvents.length - 1 ? 'end' : 'middle';
+          const labelX = index === 0 ? x + 8 : index === orderedEvents.length - 1 ? x - 8 : x;
+          return `
+            <circle data-index="${index}" cx="${x}" cy="${y}" r="7" class="graph-point ${value === 0 ? 'neutral' : ''} ${appState.graphCompleted ? 'completed' : ''}" style="animation-delay:${delay}" />
+            <text x="${labelX}" y="${labelY}" class="axis-label point-value-label" style="text-anchor:${labelAnchor}">${formatGraphValue(value)}</text>
+          `;
         }).join('')}
-        <polyline points="${points.map(([x, y]) => `${x},${y}`).join(' ')}" class="graph-line" />
       </svg>
 
-      <div class="graph-controls">
-        <label class="control-card">
-          <span>사건 선택</span>
-          <select id="event-select">
-            ${events.map((event, index) => `<option value="${index}" ${index === 0 ? 'selected' : ''}>${event.id}. ${event.text}</option>`).join('')}
-          </select>
-        </label>
-        <div class="control-card">
-          <span>심리 값</span>
-          <div class="value-buttons">
-            <button class="value-btn" data-value="-4" type="button">-4</button>
-            <button class="value-btn" data-value="-2" type="button">-2</button>
-            <button class="value-btn" data-value="0" type="button">0</button>
-            <button class="value-btn" data-value="2" type="button">2</button>
-            <button class="value-btn" data-value="4" type="button">4</button>
-          </div>
+      ${appState.graphCompleted ? `
+        <div class="graph-export">
+          <button id="copy-graph-btn" type="button" class="export-btn">공유하기</button>
+          <p id="graph-copy-feedback" class="feedback" aria-live="polite"></p>
         </div>
-      </div>
+      ` : ''}
+
+      <p class="graph-status">${allFilled ? '모든 사건에 값을 표시했어요. 완료를 눌러 그래프를 완성해보세요!' : `사건 ${filledCount} / ${orderedEvents.length}개 표시함`}</p>
 
       <div class="actions">
         <button id="graph-submit" type="button">완료</button>
       </div>
       <p id="graph-feedback" class="feedback" aria-live="polite"></p>
+    </div>
+  `;
+}
+
+const GRAPH_EXPORT_STYLES = `
+  .axis { stroke: #1e293b; stroke-width: 2; }
+  .grid { stroke: #e5e7eb; stroke-width: 1; }
+  .grid.zero-line { stroke: #94a3b8; stroke-width: 1.5; }
+  .grid.grid-vertical { stroke: #eef2ff; }
+  .axis-label { fill: #64748b; font-size: 11px; font-weight: 600; font-family: 'Pretendard', 'Segoe UI', sans-serif; }
+  .axis-label.y-label { text-anchor: end; dominant-baseline: middle; }
+  .axis-label.x-label { text-anchor: middle; }
+  .graph-line { fill: none; stroke: #4f46e5; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+  .graph-point { fill: #4f46e5; stroke: white; stroke-width: 2; }
+  .graph-point.neutral { fill: #94a3b8; }
+  .point-value-label { fill: #4f46e5; font-size: 11px; font-weight: 700; text-anchor: middle; font-family: 'Pretendard', 'Segoe UI', sans-serif; }
+`;
+
+function exportGraphAsPngBlob() {
+  return new Promise((resolve, reject) => {
+    const original = document.querySelector('.graph-svg');
+    if (!original) {
+      reject(new Error('그래프를 찾을 수 없습니다.'));
+      return;
+    }
+
+    const clone = original.cloneNode(true);
+    clone.querySelectorAll('.graph-line').forEach((line) => {
+      line.classList.remove('drawing');
+      line.style.strokeDasharray = 'none';
+      line.style.strokeDashoffset = '0';
+    });
+    clone.querySelectorAll('.graph-point').forEach((point) => {
+      point.classList.remove('completed');
+    });
+
+    const styleEl = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+    styleEl.textContent = GRAPH_EXPORT_STYLES;
+    clone.insertBefore(styleEl, clone.firstChild);
+
+    const [, , vbWidth, vbHeight] = clone.getAttribute('viewBox').split(' ').map(Number);
+    const scale = 2;
+    const width = vbWidth * scale;
+    const height = vbHeight * scale;
+    clone.setAttribute('width', String(width));
+    clone.setAttribute('height', String(height));
+
+    const svgString = new XMLSerializer().serializeToString(clone);
+    const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(svgBlob);
+
+    const image = new Image();
+    image.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(image, 0, 0, width, height);
+      URL.revokeObjectURL(url);
+      canvas.toBlob((blob) => {
+        if (blob) {
+          resolve(blob);
+        } else {
+          reject(new Error('이미지 생성에 실패했습니다.'));
+        }
+      }, 'image/png');
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('그래프를 이미지로 변환하는 데 실패했습니다.'));
+    };
+    image.src = url;
+  });
+}
+
+function createEventPeekPanel() {
+  return `
+    <div class="event-peek-panel">
+      <div class="event-peek-grid">
+        ${events.map((event) => `
+          <div class="event-peek-item">
+            <span class="event-peek-number">${event.id}</span>
+            <span class="event-peek-text">${event.text}</span>
+          </div>
+        `).join('')}
+      </div>
     </div>
   `;
 }
@@ -386,68 +652,101 @@ function attachTimelineEvents() {
 }
 
 function attachGraphEvents() {
-  const select = document.querySelector('#event-select');
-  const feedback = document.querySelector('#graph-feedback');
   const svg = document.querySelector('.graph-svg');
-
-  let currentEventIndex = Number(select.value);
-
-  select.addEventListener('change', (event) => {
-    currentEventIndex = Number(event.target.value);
-  });
-
-  document.querySelectorAll('.value-btn').forEach((button) => {
-    button.addEventListener('click', () => {
-      const value = Number(button.dataset.value);
-      appState.graphValues[currentEventIndex] = value;
-      appState.graphPoints = buildGraphPoints();
-      render();
-    });
-  });
+  const metrics = getPlotMetrics();
+  const { margin, plotWidth, plotHeight, viewBoxWidth, viewBoxHeight, maxValue, orderedEvents, stepX } = metrics;
 
   svg.addEventListener('click', (event) => {
     const rect = svg.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    const index = Math.round((x / rect.width) * (events.length - 1));
-    const clampedIndex = Math.max(0, Math.min(events.length - 1, index));
-    const graphHeight = 280;
-    const maxValue = 4;
-    const minValue = -4;
-    const value = Math.max(minValue, Math.min(maxValue, Math.round(((graphHeight / 2 - y) / (graphHeight / 2)) * 4)));
+    const scaleX = viewBoxWidth / rect.width;
+    const scaleY = viewBoxHeight / rect.height;
+    const clickX = (event.clientX - rect.left) * scaleX;
+    const clickY = (event.clientY - rect.top) * scaleY;
 
-    appState.graphValues[clampedIndex] = value;
-    appState.graphPoints = buildGraphPoints();
+    const relX = clickX - margin.left;
+    const relY = clickY - margin.top;
+    if (relX < -20 || relX > plotWidth + 20 || relY < -20 || relY > plotHeight + 20) {
+      return;
+    }
+
+    const index = Math.max(0, Math.min(orderedEvents.length - 1, Math.round(relX / stepX)));
+    const rawValue = ((plotHeight / 2 - relY) / (plotHeight / 2)) * maxValue;
+    const value = Math.max(-maxValue, Math.min(maxValue, Math.round(rawValue * 2) / 2));
+
+    appState.graphValues[index] = value;
+    appState.graphCompleted = false;
     render();
   });
 
+  const peekToggle = document.querySelector('#event-peek-toggle');
+  if (peekToggle) {
+    peekToggle.addEventListener('click', () => {
+      appState.showEventPeek = !appState.showEventPeek;
+      render();
+    });
+  }
+
+  const copyGraphBtn = document.querySelector('#copy-graph-btn');
+  if (copyGraphBtn) {
+    copyGraphBtn.addEventListener('click', async () => {
+      const copyFeedback = document.querySelector('#graph-copy-feedback');
+
+      if (!navigator.clipboard || typeof window.ClipboardItem === 'undefined') {
+        copyFeedback.textContent = '이 브라우저는 이미지 클립보드 복사를 지원하지 않아요.';
+        copyFeedback.classList.add('warning');
+        copyFeedback.classList.remove('success');
+        return;
+      }
+
+      try {
+        const blob = await exportGraphAsPngBlob();
+        await navigator.clipboard.write([new window.ClipboardItem({ 'image/png': blob })]);
+        copyFeedback.textContent = '그래프가 클립보드에 복사되었어요! 캔바에서 Ctrl+V(붙여넣기)로 넣어보세요.';
+        copyFeedback.classList.add('success');
+        copyFeedback.classList.remove('warning');
+      } catch (error) {
+        copyFeedback.textContent = '복사에 실패했어요. 다시 시도해주세요.';
+        copyFeedback.classList.add('warning');
+        copyFeedback.classList.remove('success');
+      }
+    });
+  }
+
   document.querySelector('#graph-submit').addEventListener('click', () => {
+    const feedback = document.querySelector('#graph-feedback');
+    const allFilled = appState.graphValues.every((value) => value !== null && value !== undefined);
+
+    if (!allFilled) {
+      feedback.textContent = '아직 표시하지 않은 사건이 있어요. 좌표평면 위에 12개 사건을 모두 클릭해 표시해주세요.';
+      feedback.classList.add('warning');
+      feedback.classList.remove('success');
+      return;
+    }
+
+    appState.graphCompleted = true;
+    render();
+
+    const resultFeedback = document.querySelector('#graph-feedback');
+    resultFeedback.classList.remove('warning');
+    resultFeedback.classList.add('success');
+
     const positiveCount = appState.graphValues.filter((value) => value > 0).length;
     const negativeCount = appState.graphValues.filter((value) => value < 0).length;
 
     if (positiveCount > negativeCount) {
-      feedback.textContent = '이인국의 심리가 대체로 긍정적으로 전개된 흐름으로 보입니다. 삶의 전환을 긍정적으로 받아들이는 모습이 드러납니다.';
+      resultFeedback.textContent = '이인국의 심리가 대체로 긍정적으로 전개된 흐름으로 보입니다. 삶의 전환을 긍정적으로 받아들이는 모습이 드러납니다.';
     } else if (negativeCount > positiveCount) {
-      feedback.textContent = '이인국의 심리가 대체로 부정적으로 흐른 것으로 보입니다. 상실과 불안이 반복된 장면들이 많았네요.';
+      resultFeedback.textContent = '이인국의 심리가 대체로 부정적으로 흐른 것으로 보입니다. 상실과 불안이 반복된 장면들이 많았네요.';
     } else {
-      feedback.textContent = '이인국의 심리가 균형 잡힌 흐름으로 보입니다. 사건마다 감정의 방향이 나뉘어졌네요.';
+      resultFeedback.textContent = '이인국의 심리가 균형 잡힌 흐름으로 보입니다. 사건마다 감정의 방향이 나뉘어졌네요.';
     }
   });
 }
 
-function buildGraphPoints() {
-  const graphHeight = 280;
-  const graphWidth = 760;
-  const stepX = graphWidth / (events.length - 1);
-  const maxValue = 4;
-  const minValue = -4;
-
-  return appState.graphValues.map((value, index) => {
-    const x = index * stepX;
-    const y = ((value - minValue) / (maxValue - minValue)) * graphHeight;
-    return [x, graphHeight - y];
-  });
+function buildGraphPoints(metrics) {
+  return appState.graphValues
+    .map((value, index) => (value === null || value === undefined ? null : [metrics.indexToX(index), metrics.valueToY(value)]))
+    .filter(Boolean);
 }
 
-appState.graphPoints = buildGraphPoints();
 render();
